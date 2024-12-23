@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  discord-bot:
+    build: .
+    container_name: god-of-custom-game
+    restart: always
+    volumes:
+      - ./user_list.json:/app/user_list.json
+      - ./game_list.json:/app/game_list.json
+      - ./logs:/app/logs
+    env_file:
+      - .env

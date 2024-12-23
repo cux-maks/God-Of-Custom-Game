@@ -22,3 +22,43 @@ pip-selfcheck.json
 
 ### user info ###
 user_list.json
+project_structure.txt
+*.log
+
+# Docker
+.docker
+docker-compose.override.yml
+
+# Docker build context & runtime files
+*.dockerignore
+.docker/
+docker/data/
+docker-compose.override.yaml
+docker-compose.override.yml
+
+# Docker volume data
+data/
+docker_data/
+
+# Docker logs
+docker-compose.log
+docker/logs/
+*.log
+
+# Docker environment files
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+
+# Docker network files
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# Docker temp files
+.docker-compose*
+.docker/
+.containers/
+tmp/
