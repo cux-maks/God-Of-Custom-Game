@@ -1,2 +1,1 @@
-# God-Of-Custom-Game
-롤 내전 봇
+# 내전의 신: God Of Custom Game
