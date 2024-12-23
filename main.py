@@ -1,12 +1,4 @@
-from dotenv import load_dotenv
-load_dotenv()
-
-import os
-from god_of_custom_game import MyBot
-
-def main():
-    bot = MyBot()
-    bot.run(os.getenv("BOT_TOKEN"))
+from bot.bot import run_bot
 
 if __name__ == "__main__":
-    main()
+    run_bot()
