@@ -32,26 +32,17 @@ class TeamBalancer:
         if player['games_played'] == 0:
             return 50.0  # 기본 점수
 
-        # 승률 (25%)
-        winrate = (player['wins'] / player['games_played'] * 100)
-        
-        # KDA 점수 (20%)
-        kda_score = player['avg_kda'] * 10
-        
-        # 딜량 점수 (20%)
-        damage_score = player['avg_damage_dealt'] / 1000
-        
-        # 생존력 점수 (10%)
-        tankiness_score = player['avg_damage_taken'] / 1000
+        # 모든 값을 float로 변환
+        winrate = float(player['wins']) / float(player['games_played']) * 100
+        kda_score = float(player['avg_kda']) * 10
+        damage_score = float(player['avg_damage_dealt']) / 1000
+        tankiness_score = float(player['avg_damage_taken']) / 1000
+        healing = float(player['avg_healing']) / 1000
+        cc_score = float(player.get('avg_cc_score', 0)) * 2
+        performance_score = float(player['performance_score']) * 10
         
         # 유틸리티 점수 (15%)
-        utility_score = (
-            (player['avg_healing'] / 1000) +  # 힐량
-            (player.get('avg_cc_score', 0) * 2)  # CC점수
-        )
-        
-        # 기존 performance_score 반영 (10%)
-        performance_score = player['performance_score'] * 10
+        utility_score = healing + cc_score
         
         # 종합 점수 계산
         total_score = (
@@ -63,13 +54,11 @@ class TeamBalancer:
             performance_score * 0.10     # 기존 성능점수 10%
         )
         
-        return total_score
+        return float(total_score)
 
     @staticmethod
     def balance_teams(players: List[dict]) -> tuple[List[dict], List[dict]]:
-        """
-        종합 점수를 기준으로 최적의 팀 밸런스를 찾습니다.
-        """
+        """종합 점수를 기준으로 최적의 팀 밸런스를 찾습니다."""
         import itertools
 
         # 각 플레이어의 종합 점수 계산
@@ -88,8 +77,8 @@ class TeamBalancer:
             team1_set = set(player['discord_id'] for player in team1_players)
             team2_players = [p for p in players if p['discord_id'] not in team1_set]
 
-            team1_score = sum(p['score'] for p in team1_players)
-            team2_score = sum(p['score'] for p in team2_players)
+            team1_score = sum(float(p['score']) for p in team1_players)
+            team2_score = sum(float(p['score']) for p in team2_players)
             
             # 점수 차이 계산
             score_diff = abs(team1_score - team2_score)
@@ -99,43 +88,6 @@ class TeamBalancer:
                 min_diff = score_diff
                 best_team1 = list(team1_players)
                 best_team2 = team2_players
-
-        # 두 팀의 점수가 비슷하도록 미세 조정
-        total_adjustments = 0
-        while total_adjustments < 10:  # 최대 10번까지만 시도
-            improvements_made = False
-            
-            # 각 팀에서 한 명씩 선택해서 교체 시도
-            for p1 in best_team1:
-                for p2 in best_team2:
-                    # 교체했을 때의 점수 차이 계산
-                    curr_diff = abs(sum(p['score'] for p in best_team1) - sum(p['score'] for p in best_team2))
-                    
-                    # 임시로 선수 교체
-                    best_team1.remove(p1)
-                    best_team2.remove(p2)
-                    best_team1.append(p2)
-                    best_team2.append(p1)
-                    
-                    new_diff = abs(sum(p['score'] for p in best_team1) - sum(p['score'] for p in best_team2))
-                    
-                    # 교체가 도움이 되지 않으면 원상복구
-                    if new_diff >= curr_diff:
-                        best_team1.remove(p2)
-                        best_team2.remove(p1)
-                        best_team1.append(p1)
-                        best_team2.append(p2)
-                    else:
-                        improvements_made = True
-                        break
-                
-                if improvements_made:
-                    break
-            
-            if not improvements_made:
-                break
-                
-            total_adjustments += 1
 
         return best_team1, best_team2
 
@@ -159,8 +111,8 @@ class GameCommands(commands.Cog):
             return
 
         # 등록된 모든 플레이어 데이터 가져오기
-        user_data = await self.user_service.load_user_data()
-        if not user_data:
+        user_data, error = await self.user_service.get_all_users(ctx.guild.id)
+        if error:
             embed = EmbedBuilder.error(
                 "등록된 사용자 없음",
                 "게임 생성을 위해서는 먼저 사용자 등록이 필요합니다."
@@ -170,9 +122,9 @@ class GameCommands(commands.Cog):
 
         # 플레이어 데이터 가공
         players = []
-        for nickname, data in user_data.items():
+        for data in user_data:
             players.append({
-                'discord_id': nickname,
+                'discord_id': f"{data['nickname']}#{data['tag']}",  # 닉네임과 태그를 합쳐서 사용
                 'nickname': data['nickname'],
                 'games_played': data['games_played'],
                 'wins': data['wins'],
@@ -212,7 +164,10 @@ class GameCommands(commands.Cog):
             # 선택된 플레이어들의 전적 갱신
             updated_players = []
             for player in selected_players:
-                success, error_msg, updated_info = await self.user_service.update_user_stats(player['nickname'])
+                success, error_msg, updated_info = await self.user_service.update_user_stats(
+                    guild_id=ctx.guild.id,
+                    nickname_tag=player['discord_id']
+                )
                 if success:
                     updated_players.append({
                         'discord_id': player['discord_id'],

@@ -6,6 +6,7 @@ import logging
 from urllib import parse
 from utils.constants import RIOT_API_KEY, RIOT_API_BASE_URL, RIOT_API_ASIA_URL
 from utils.rate_limiter import RateLimiter
+from utils.logging_config import setup_logger
 
 class RiotService:
     def __init__(self):
@@ -27,15 +28,8 @@ class RiotService:
             requests_per_two_minutes=100
         )
         
-        # 로깅 설정
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.DEBUG)
-        
-        fh = logging.FileHandler('riot_api.log', encoding='utf-8')
-        fh.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        fh.setFormatter(formatter)
-        self.logger.addHandler(fh)
+        self.logger = setup_logger(__name__, 'user_service.log')
+
 
     async def _make_request(self, url: str) -> Tuple[Optional[Dict], Optional[str]]:
         """API 요청 실행"""
@@ -154,38 +148,43 @@ class RiotService:
                 'cc_score': 0
             }
 
-            # 최대 20게임까지만 분석
+            # 매치 정보를 병렬로 조회
+            tasks = []
+            for match_id in matches[:25]:  # 최근 25게임 분석
+                tasks.append(self.get_match_details(match_id))
+            
+            # 병렬로 매치 정보 조회
+            match_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
             processed_matches = 0
-            for match_id in matches[:20]:
-                match_detail, error = await self.get_match_details(match_id)
-                if error:
-                    self.logger.warning(f"매치 {match_id} 조회 실패: {error}")
-                    continue
-                if not match_detail or match_detail['info']['queueId'] != 450:  # ARAM 큐 ID 확인
-                    continue
+            for match_result in match_results:
+                if isinstance(match_result, tuple):
+                    match_detail, error = match_result
+                    if error or not match_detail:
+                        continue
+                    
+                    if match_detail['info']['queueId'] != 450:  # ARAM 큐 ID 확인
+                        continue
 
-                # 참가자 정보 찾기
-                participant = next(
-                    (p for p in match_detail['info']['participants'] 
-                     if p['puuid'] == account_info['puuid']),
-                    None
-                )
-                if not participant:
-                    continue
+                    # 참가자 정보 찾기
+                    participant = next(
+                        (p for p in match_detail['info']['participants'] 
+                         if p['puuid'] == account_info['puuid']),
+                        None
+                    )
+                    if not participant:
+                        continue
 
-                processed_matches += 1
-                total_stats['games'] += 1
-                total_stats['wins'] += 1 if participant['win'] else 0
-                total_stats['kills'] += participant['kills']
-                total_stats['deaths'] += participant['deaths']
-                total_stats['assists'] += participant['assists']
-                total_stats['damage_dealt'] += participant['totalDamageDealtToChampions']
-                total_stats['damage_taken'] += participant['totalDamageTaken']
-                total_stats['healing'] += participant['totalHeal'] + participant.get('totalDamageSelfMitigated', 0)
-                total_stats['cc_score'] += participant.get('timeCCingOthers', 0)
-
-                # API 호출 제한을 위한 딜레이
-                await asyncio.sleep(0.1)
+                    processed_matches += 1
+                    total_stats['games'] += 1
+                    total_stats['wins'] += 1 if participant['win'] else 0
+                    total_stats['kills'] += participant['kills']
+                    total_stats['deaths'] += max(1, participant['deaths'])  # 0으로 나누기 방지
+                    total_stats['assists'] += participant['assists']
+                    total_stats['damage_dealt'] += participant['totalDamageDealtToChampions']
+                    total_stats['damage_taken'] += participant['totalDamageTaken']
+                    total_stats['healing'] += participant['totalHeal'] + participant.get('totalDamageSelfMitigated', 0)
+                    total_stats['cc_score'] += participant.get('timeCCingOthers', 0)
 
             # 평균 계산
             games = total_stats['games']
@@ -198,6 +197,7 @@ class RiotService:
                     'summoner_level': summoner['summonerLevel'],
                     'games_played': games,
                     'wins': total_stats['wins'],
+                    'losses': games - total_stats['wins'],  # losses 계산 추가
                     'avg_kda': round(avg_kda, 2),
                     'avg_damage_dealt': round(total_stats['damage_dealt'] / games),
                     'avg_damage_taken': round(total_stats['damage_taken'] / games),

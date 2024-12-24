@@ -5,9 +5,42 @@ services:
     build: .
     container_name: god-of-custom-game
     restart: always
+    depends_on:
+      - mysql
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=god_of_custom_game
+      - MYSQL_USER=bot_user
+      - MYSQL_PASSWORD=bot_password
     volumes:
-      - ./user_list.json:/app/user_list.json
-      - ./game_list.json:/app/game_list.json
       - ./logs:/app/logs
     env_file:
       - .env
+    networks:
+      - bot-network
+
+  mysql:
+    image: mysql:8.0
+    container_name: god-of-custom-game-db
+    restart: always
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_password
+      - MYSQL_DATABASE=god_of_custom_game
+      - MYSQL_USER=bot_user
+      - MYSQL_PASSWORD=bot_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    networks:
+      - bot-network
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+volumes:
+  mysql-data:
+
+networks:
+  bot-network:
+    driver: bridge
