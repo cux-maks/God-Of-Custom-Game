@@ -99,122 +99,93 @@ class RiotService:
         url = f"{RIOT_API_ASIA_URL}/lol/match/v5/matches/{match_id}"
         return await self._make_request(url)
 
-    async def analyze_aram_performance(self, game_name: str, tag_line: str) -> Tuple[Optional[Dict], Optional[str]]:
-        """ARAM 게임 성능 분석"""
+    async def get_match_details_for_user(self, match_id: str, puuid: str) -> Tuple[Optional[Dict], Optional[str]]:
+        """특정 유저의 매치 상세 정보 추출"""
+        match_detail, error = await self.get_match_details(match_id)
+        if error:
+            return None, error
+        if not match_detail:
+            return None, "매치 정보를 찾을 수 없습니다."
+
+        # 참가자 정보 찾기
+        participant = next(
+            (p for p in match_detail['info']['participants'] 
+            if p['puuid'] == puuid),
+            None
+        )
+        if not participant:
+            return None, "매치에서 플레이어를 찾을 수 없습니다."
+
+        # 필요한 데이터 추출
+        match_data = {
+            'match_id': match_id,
+            'game_creation': match_detail['info']['gameCreation'],
+            'game_duration': match_detail['info']['gameDuration'],
+            'champion_id': participant['championId'],
+            'win': participant['win'],
+            'kills': participant['kills'],
+            'deaths': participant['deaths'],
+            'assists': participant['assists'],
+            'total_damage_dealt': participant['totalDamageDealtToChampions'],
+            'total_damage_taken': participant['totalDamageTaken'],
+            'total_heal': participant['totalHeal'] + participant.get('totalDamageSelfMitigated', 0),
+            'total_cc_score': participant.get('timeCCingOthers', 0)
+        }
+
+        return match_data, None
+
+    async def analyze_aram_performance(self, game_name: str, tag_line: str, last_match_time: Optional[int] = None) -> Tuple[Optional[Dict], Optional[str], List[Dict]]:
+        """ARAM 게임 성능 분석 및 새로운 매치 데이터 반환"""
         try:
             # Riot ID로 계정 정보 조회
             account_info, error = await self.get_account_by_riot_id(game_name, tag_line)
             if error:
-                return None, error
+                return None, error, []
             if not account_info:
-                return None, "계정 정보를 찾을 수 없습니다."
+                return None, "계정 정보를 찾을 수 없습니다.", []
 
             # PUUID로 소환사 정보 조회
             summoner, error = await self.get_summoner_by_puuid(account_info['puuid'])
             if error:
-                return None, error
+                return None, error, []
             if not summoner:
-                return None, "소환사 정보를 찾을 수 없습니다."
+                return None, "소환사 정보를 찾을 수 없습니다.", []
 
             # ARAM 매치 목록 조회
-            matches, error = await self.get_aram_matches(account_info['puuid'])
+            matches, error = await self.get_aram_matches(account_info['puuid'], last_match_time)
             if error:
-                return None, error
+                return None, error, []
 
             if not matches:
-                return {
+                basic_info = {
                     'summoner_id': summoner['id'],
                     'puuid': summoner['puuid'],
                     'account_id': summoner['accountId'],
                     'summoner_level': summoner['summonerLevel'],
-                    'games_played': 0,
-                    'wins': 0,
-                    'avg_kda': 0.0,
-                    'avg_damage_dealt': 0,
-                    'avg_damage_taken': 0,
-                    'avg_healing': 0,
-                    'performance_score': 0.0
-                }, None
+                }
+                return basic_info, None, []
 
-            total_stats = {
-                'games': 0,
-                'wins': 0,
-                'kills': 0,
-                'deaths': 0,
-                'assists': 0,
-                'damage_dealt': 0,
-                'damage_taken': 0,
-                'healing': 0,
-                'cc_score': 0
+            # 매치 상세 정보를 병렬로 조회
+            match_tasks = []
+            for match_id in matches:
+                match_tasks.append(self.get_match_details_for_user(match_id, account_info['puuid']))
+
+            match_results = await asyncio.gather(*match_tasks)
+            
+            new_matches = []
+            for match_result, _ in match_results:
+                if match_result:
+                    new_matches.append(match_result)
+
+            basic_info = {
+                'summoner_id': summoner['id'],
+                'puuid': summoner['puuid'],
+                'account_id': summoner['accountId'],
+                'summoner_level': summoner['summonerLevel'],
             }
 
-            # 매치 정보를 병렬로 조회
-            tasks = []
-            for match_id in matches[:25]:  # 최근 25게임 분석
-                tasks.append(self.get_match_details(match_id))
-            
-            # 병렬로 매치 정보 조회
-            match_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            processed_matches = 0
-            for match_result in match_results:
-                if isinstance(match_result, tuple):
-                    match_detail, error = match_result
-                    if error or not match_detail:
-                        continue
-                    
-                    if match_detail['info']['queueId'] != 450:  # ARAM 큐 ID 확인
-                        continue
-
-                    # 참가자 정보 찾기
-                    participant = next(
-                        (p for p in match_detail['info']['participants'] 
-                         if p['puuid'] == account_info['puuid']),
-                        None
-                    )
-                    if not participant:
-                        continue
-
-                    processed_matches += 1
-                    total_stats['games'] += 1
-                    total_stats['wins'] += 1 if participant['win'] else 0
-                    total_stats['kills'] += participant['kills']
-                    total_stats['deaths'] += max(1, participant['deaths'])  # 0으로 나누기 방지
-                    total_stats['assists'] += participant['assists']
-                    total_stats['damage_dealt'] += participant['totalDamageDealtToChampions']
-                    total_stats['damage_taken'] += participant['totalDamageTaken']
-                    total_stats['healing'] += participant['totalHeal'] + participant.get('totalDamageSelfMitigated', 0)
-                    total_stats['cc_score'] += participant.get('timeCCingOthers', 0)
-
-            # 평균 계산
-            games = total_stats['games']
-            if games > 0:
-                avg_kda = (total_stats['kills'] + total_stats['assists']) / max(1, total_stats['deaths'])
-                performance_data = {
-                    'summoner_id': summoner['id'],
-                    'puuid': summoner['puuid'],
-                    'account_id': summoner['accountId'],
-                    'summoner_level': summoner['summonerLevel'],
-                    'games_played': games,
-                    'wins': total_stats['wins'],
-                    'losses': games - total_stats['wins'],  # losses 계산 추가
-                    'avg_kda': round(avg_kda, 2),
-                    'avg_damage_dealt': round(total_stats['damage_dealt'] / games),
-                    'avg_damage_taken': round(total_stats['damage_taken'] / games),
-                    'avg_healing': round(total_stats['healing'] / games),
-                    'avg_cc_score': round(total_stats['cc_score'] / games, 1),
-                    'performance_score': round((
-                        (avg_kda * 0.3) +
-                        (total_stats['wins'] / games * 0.3) +
-                        (total_stats['damage_dealt'] / games / 1000 * 0.2) +
-                        (total_stats['healing'] / games / 1000 * 0.1) +
-                        (total_stats['cc_score'] / games / 10 * 0.1)
-                    ), 2)
-                }
-                return performance_data, None
-
-            return None, "분석할 수 있는 ARAM 게임 데이터가 없습니다."
+            return basic_info, None, new_matches
 
         except Exception as e:
             self.logger.error(f"성능 분석 중 오류 발생: {str(e)}")
-            return None, f"성능 분석 중 오류가 발생했습니다: {str(e)}"
+            return None, f"성능 분석 중 오류가 발생했습니다: {str(e)}", []
