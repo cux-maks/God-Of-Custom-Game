@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import discord
 from discord.ext import commands, tasks
 from datetime import datetime, time
 from typing import Optional, List, Dict, Tuple
