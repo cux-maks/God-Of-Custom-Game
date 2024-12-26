@@ -21,6 +21,7 @@ class MyBot(commands.Bot):
         # 코그 로드
         await self.load_extension("bot.cogs.user_commands")
         await self.load_extension("bot.cogs.game_commands")
+        await self.load_extension("bot.cogs.stats_updater")  # 추가된 부분
         await self.add_base_commands()
         
     async def add_base_commands(self):
