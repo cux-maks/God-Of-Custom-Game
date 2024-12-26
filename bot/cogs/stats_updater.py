@@ -1,18 +1,25 @@
 import asyncio
 import logging
-import discord
 from discord.ext import commands, tasks
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Optional, List, Dict, Tuple
+import discord
 from services.user_service import UserService
+from services.database_service import DatabaseService
 from utils.embed_builder import EmbedBuilder
 from utils.logging_config import setup_logger
+import pytz
 
 class AutomaticStatsUpdater(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.user_service = UserService()
+        self.db_service = DatabaseService()
         self.logger = setup_logger('stats_updater', 'stats_updater.log')
+        
+        # 한국 시간 기준 오전 6시 설정
+        self.kst = pytz.timezone('Asia/Seoul')
+        self.update_time = time(hour=6)
         
         # 자동 갱신 작업 시작
         self.stats_update_task.start()
@@ -21,13 +28,12 @@ class AutomaticStatsUpdater(commands.Cog):
         """코그가 언로드될 때 작업 중지"""
         self.stats_update_task.cancel()
 
-    @tasks.loop(time=time(hour=6))  # 매일 오전 6시
+    @tasks.loop(hours=24)
     async def stats_update_task(self):
         """전체 유저 전적 자동 갱신 작업"""
         self.logger.info("일일 전적 갱신 작업 시작")
         start_time = datetime.now()
         
-        # 모든 길드에 대해 처리
         for guild in self.bot.guilds:
             try:
                 await self.update_guild_users(guild)
@@ -42,24 +48,27 @@ class AutomaticStatsUpdater(commands.Cog):
         """길드 내 모든 유저의 전적 갱신"""
         self.logger.info(f"길드 {guild.name} ({guild.id}) 전적 갱신 시작")
         
-        # 시스템 메시지 채널 찾기
+        # 길드 설정 조회
+        settings, error = await self.db_service.get_guild_settings(guild.id)
+        if error:
+            self.logger.error(f"길드 설정 조회 실패: {error}")
+            return
+            
+        if not settings['update_notifications']:
+            self.logger.info(f"길드 {guild.name}의 알림이 비활성화되어 있습니다.")
+            # 알림 없이 갱신만 진행
+            await self.update_users_without_notification(guild)
+            return
+
+        # 지정된 채널 찾기
         notify_channel = None
         for channel in guild.text_channels:
-            # 'bot', 'system', 'notification' 등의 키워드가 포함된 채널 우선
-            if any(keyword in channel.name.lower() for keyword in ['bot', 'system', 'notification']):
+            if channel.name == "게임방방":
                 notify_channel = channel
                 break
-        
-        if not notify_channel:
-            # 쓰기 권한이 있는 첫 번째 채널 사용
-            for channel in guild.text_channels:
-                permissions = channel.permissions_for(guild.me)
-                if permissions.send_messages:
-                    notify_channel = channel
-                    break
 
         if not notify_channel:
-            self.logger.warning(f"길드 {guild.name}에서 알림을 보낼 채널을 찾을 수 없습니다.")
+            self.logger.warning(f"길드 {guild.name}에서 '게임방' 채널을 찾을 수 없습니다.")
             return
 
         try:
@@ -75,6 +84,10 @@ class AutomaticStatsUpdater(commands.Cog):
             users, error = await self.user_service.get_all_users(guild.id)
             if error:
                 self.logger.error(f"길드 {guild.name} 유저 목록 조회 실패: {error}")
+                await progress_msg.edit(embed=EmbedBuilder.error(
+                    "전적 갱신 실패",
+                    "유저 목록을 가져오는데 실패했습니다."
+                ))
                 return
 
             if not users:
@@ -222,11 +235,96 @@ class AutomaticStatsUpdater(commands.Cog):
 
         return embed
 
+    async def update_users_without_notification(self, guild) -> None:
+        """알림 없이 유저 전적 갱신"""
+        users, error = await self.user_service.get_all_users(guild.id)
+        if error:
+            self.logger.error(f"길드 {guild.name} 유저 목록 조회 실패: {error}")
+            return
+
+        for user in users:
+            nickname_tag = f"{user['nickname']}#{user['tag']}"
+            try:
+                await self.user_service.update_user_stats(
+                    guild_id=guild.id,
+                    nickname_tag=nickname_tag
+                )
+            except Exception as e:
+                self.logger.error(f"유저 {nickname_tag} 갱신 중 오류: {str(e)}")
+
+    @commands.command(
+        name="알림설정",
+        help="자동 전적 갱신 알림 설정을 변경합니다.",
+        usage="%알림설정 <켜기/끄기>"
+    )
+    @commands.has_permissions(administrator=True)
+    async def set_notifications(self, ctx, status: str):
+        if status not in ['켜기', '끄기']:
+            embed = EmbedBuilder.error(
+                "잘못된 입력",
+                "설정값은 '켜기' 또는 '끄기'만 가능합니다."
+            )
+            await ctx.reply(embed=embed)
+            return
+
+        enable = (status == '켜기')
+        success, error = await self.db_service.update_guild_settings(
+            guild_id=ctx.guild.id,
+            update_notifications=enable
+        )
+
+        if success:
+            embed = EmbedBuilder.success(
+                "설정 완료",
+                f"자동 전적 갱신 알림이 {status}로 설정되었습니다.",
+                footer="매일 오전 6시에 전적이 갱신됩니다."
+            )
+        else:
+            embed = EmbedBuilder.error(
+                "설정 실패",
+                f"설정 변경 중 오류가 발생했습니다: {error}"
+            )
+
+        await ctx.reply(embed=embed)
+
+    @set_notifications.error
+    async def command_error(self, ctx, error):
+        """명령어 오류 처리"""
+        if isinstance(error, commands.MissingPermissions):
+            embed = EmbedBuilder.error(
+                "권한 없음",
+                "이 명령어는 관리자만 사용할 수 있습니다."
+            )
+        elif isinstance(error, commands.MissingRequiredArgument):
+            embed = EmbedBuilder.error(
+                "인자 누락",
+                f"필요한 인자가 누락되었습니다.\n사용법: `{ctx.command.usage}`"
+            )
+        else:
+            self.logger.error(f"명령어 처리 중 오류 발생: {str(error)}")
+            embed = EmbedBuilder.error(
+                "오류 발생",
+                "명령어 처리 중 오류가 발생했습니다."
+            )
+        
+        await ctx.reply(embed=embed)
+
     @stats_update_task.before_loop
     async def before_update_task(self):
-        """봇이 준비될 때까지 대기"""
+        """다음 실행 시간까지 대기"""
         await self.bot.wait_until_ready()
-        self.logger.info("자동 전적 갱신 작업 준비 완료")
+        
+        # 다음 실행 시간 계산 (한국 시간 기준)
+        now = datetime.now(self.kst)
+        target = datetime.combine(now.date(), self.update_time)
+        target = self.kst.localize(target)
+        
+        if now.time() >= self.update_time:
+            target += timedelta(days=1)
+        
+        # 대기
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
 
 async def setup(bot):
     """코그 설정"""

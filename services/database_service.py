@@ -605,3 +605,79 @@ class DatabaseService:
             if 'conn' in locals():
                 conn.close()
 
+    async def get_guild_settings(self, guild_id: int) -> Tuple[Optional[Dict], Optional[str]]:
+        """길드의 설정 정보 조회"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            sql = """
+            SELECT update_notifications, notification_channel
+            FROM guilds
+            WHERE guild_id = %s
+            """
+            
+            cursor.execute(sql, (guild_id,))
+            settings = cursor.fetchone()
+            
+            if not settings:
+                return None, "길드 설정을 찾을 수 없습니다."
+                
+            return settings, None
+
+        except Exception as e:
+            self.logger.error(f"길드 설정 조회 중 오류 발생: {str(e)}")
+            return None, str(e)
+
+        finally:
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
+
+    async def update_guild_settings(
+        self, 
+        guild_id: int, 
+        update_notifications: Optional[bool] = None,
+        notification_channel: Optional[str] = None
+    ) -> Tuple[bool, Optional[str]]:
+        """길드 설정 업데이트"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            updates = []
+            values = []
+            
+            if update_notifications is not None:
+                updates.append("update_notifications = %s")
+                values.append(update_notifications)
+                
+            if notification_channel is not None:
+                updates.append("notification_channel = %s")
+                values.append(notification_channel)
+                
+            if not updates:
+                return True, None
+
+            sql = f"""
+            UPDATE guilds 
+            SET {', '.join(updates)}
+            WHERE guild_id = %s
+            """
+            
+            values.append(guild_id)
+            cursor.execute(sql, values)
+            conn.commit()
+            
+            return True, None
+
+        except Exception as e:
+            self.logger.error(f"길드 설정 업데이트 중 오류 발생: {str(e)}")
+            return False, str(e)
+
+        finally:
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
